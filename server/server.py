@@ -14,14 +14,33 @@ def handle_client(conn, addr):
         client_id = next_id
         next_id += 1
         clients[client_id] = conn
-    print(f"Client {client_id} connected from {addr}")
-    conn.sendall(f"ID:{client_id}".encode())
+    conn.sendall(f"Id:{client_id}".encode())
     try:
         while True:
             data = conn.recv(1024)
             if not data:
                 break
-            conn.sendall(data)
+            message = data.decode()
+            
+            if message.startswith("Msg:"):
+                parts = message.split(":", 2)
+                if len(parts) == 3:
+                    _, recipient_id_str, msg_text = parts
+                    try:
+                        recipient_id = int(recipient_id_str)
+                        with lock:
+                            if recipient_id in clients:
+                                forward_msg = f"From:{client_id}:{msg_text}"
+                                clients[recipient_id].sendall(forward_msg.encode())
+                                print(f"{msg_text}")
+                            else:
+                                conn.sendall(f"Error:Client {recipient_id} not found".encode())
+                    except ValueError:
+                        conn.sendall(b"Error:Invalid recipient ID")
+                else:
+                    conn.sendall(b"Error:Invalid message format")
+    except Exception as e:
+        pass 
     finally:
         with lock:
             del clients[client_id]
@@ -32,7 +51,7 @@ def start_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen()
-        print(f"Server running on {HOST}:{PORT}")
+        print(f"Server running")
         while True:
             conn, addr = s.accept()
             threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
