@@ -10,8 +10,13 @@ PORT = 12345
 clients = {}
 lock = threading.Lock()
 
-USERS_FILE = "users.json"
-MESSAGES_FILE = "messages.json"
+INFO_DIR = "info"
+USERS_FILE = os.path.join(INFO_DIR, "users.json")
+MESSAGES_FILE = os.path.join(INFO_DIR, "messages.json")
+PUBLIC_KEYS_FILE = os.path.join(INFO_DIR, "public_keys.json")
+
+if not os.path.exists(INFO_DIR):
+    os.makedirs(INFO_DIR)
 
 
 def load_users():
@@ -24,19 +29,36 @@ def save_users(users):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
 
+def load_public_keys():
+    if os.path.exists(PUBLIC_KEYS_FILE):
+        with open(PUBLIC_KEYS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_public_key(username, public_key_pem):
+    keys = load_public_keys()
+    keys[username] = public_key_pem
+    with open(PUBLIC_KEYS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(keys, f, indent=4, ensure_ascii=False)
+
+def get_public_key(username):
+    keys = load_public_keys()
+    return keys.get(username, None)
+
 def load_messages():
     if os.path.exists(MESSAGES_FILE):
         with open(MESSAGES_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return []
 
-def save_message(sender, receiver, message_text):
+def save_message(sender, receiver, encrypted_for_receiver, encrypted_for_sender):
     messages = load_messages()
     
     new_message = {
         "sender": sender,
         "receiver": receiver,
-        "message": message_text,
+        "message_receiver": encrypted_for_receiver,
+        "message_sender": encrypted_for_sender,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
@@ -158,16 +180,29 @@ def handle_client(conn, addr):
                 history = get_conversation_history(username, other_user)
                 conn.sendall(f"HISTORY:{json.dumps(history)}\n".encode())
             
+            elif message.startswith("SEND_PUBLIC_KEY:"):
+                public_key_pem = message.split(":", 1)[1]
+                save_public_key(username, public_key_pem)
+                conn.sendall(b"PUBLIC_KEY_SAVED\n")
+            
+            elif message.startswith("GET_PUBLIC_KEY:"):
+                requested_user = message.split(":", 1)[1]
+                public_key = get_public_key(requested_user)
+                if public_key:
+                    conn.sendall(f"PUBLIC_KEY:{requested_user}:{public_key}\n".encode())
+                else:
+                    conn.sendall(f"PUBLIC_KEY_NOT_FOUND:{requested_user}\n".encode())
+            
             elif message.startswith("MSG:"):
-                parts = message.split(":", 2)
-                if len(parts) == 3:
-                    _, recipient, msg_text = parts
+                parts = message.split(":", 3)
+                if len(parts) == 4:
+                    _, recipient, encrypted_for_receiver, encrypted_for_sender = parts
                     
-                    save_message(username, recipient, msg_text)
+                    save_message(username, recipient, encrypted_for_receiver, encrypted_for_sender)
                     
                     with lock:
                         if recipient in clients:
-                            forward_msg = f"NEW_MSG:{username}:{msg_text}:{datetime.now().strftime('%H:%M')}\n"
+                            forward_msg = f"NEW_MSG:{username}:{encrypted_for_receiver}:{datetime.now().strftime('%H:%M')}\n"
                             clients[recipient].sendall(forward_msg.encode())
                     
                     conn.sendall(b"MSG_SENT:OK\n")
