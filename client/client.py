@@ -6,6 +6,7 @@ import json
 import base64
 import os
 import hashlib
+import emoji
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
@@ -392,6 +393,18 @@ class MessengerClient:
         
         tk.Button(
             input_frame,
+            text="😊",
+            command=self.show_emoji_picker,
+            bg="#ffd700",
+            fg="black",
+            font=("Arial", 14),
+            cursor="hand2",
+            relief=tk.FLAT,
+            width=3
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        tk.Button(
+            input_frame,
             text="Trimite",
             command=self.send_message,
             bg="#0a21ee",
@@ -568,6 +581,61 @@ class MessengerClient:
         
         except Exception as e:
             messagebox.showerror("Eroare", f"Nu s-a trimis mesajul")
+    
+    def show_emoji_picker(self):
+        emoji_window = tk.Toplevel(self.root)
+        emoji_window.title("Selecteaza Emoji")
+        emoji_window.geometry("340x220")
+        emoji_window.configure(bg="#f0f0f0")
+        emoji_window.transient(self.root)
+        emoji_window.resizable(False, False)
+        
+
+        emoji_list = [
+            "😀", "😃", "😄", "😁", "😆", "😂", "🤣", "😊", "😇", "🙂",
+            "😉", "😍", "🥰", "😘", "😗", "😋", "😛", "😜", "🤪", "😎",
+            "🤗", "🤔", "🤨", "😐", "😑", "😶", "🙄", "😬", "😌", "😔",
+            "😢", "😭", "😤", "😠", "😡", "🤬", "😱", "😨", "😰", "😳",
+        ]
+        
+        frame = tk.Frame(emoji_window, bg="#f0f0f0")
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        row = 0
+        col = 0
+        for em in emoji_list:
+            btn = tk.Button(
+                frame,
+                text=em,
+                font=("Segoe UI Emoji", 16),
+                command=lambda e=em, w=emoji_window: self.insert_emoji(e, w),
+                relief=tk.FLAT,
+                bg="#ffffff",
+                activebackground="#e0e0e0",
+                cursor="hand2",
+                width=2,
+                height=1,
+                bd=0
+            )
+            btn.grid(row=row, column=col, padx=1, pady=1)
+            
+            col += 1
+            if col >= 10:
+                col = 0
+                row += 1
+    
+    def insert_emoji(self, emoji_char, emoji_window):
+        current_text = self.message_entry.get()
+        cursor_position = self.message_entry.index(tk.INSERT)
+        
+        new_text = current_text[:cursor_position] + emoji_char + current_text[cursor_position:]
+        
+        self.message_entry.delete(0, tk.END)
+        self.message_entry.insert(0, new_text)
+        self.message_entry.icursor(cursor_position + len(emoji_char))
+        
+        self.message_entry.focus_set()
+        emoji_window.destroy()
     
     def on_closing(self):
         self.running = False
