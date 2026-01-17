@@ -2,6 +2,7 @@ import socket
 import threading
 import json
 import os
+import uuid
 from datetime import datetime
 
 HOST = '127.0.0.1'
@@ -55,6 +56,7 @@ def save_message(sender, receiver, encrypted_for_receiver, encrypted_for_sender)
     messages = load_messages()
     
     new_message = {
+        "type": "text",
         "sender": sender,
         "receiver": receiver,
         "message_receiver": encrypted_for_receiver,
@@ -66,6 +68,24 @@ def save_message(sender, receiver, encrypted_for_receiver, encrypted_for_sender)
     
     with open(MESSAGES_FILE, 'w', encoding='utf-8') as f:
         json.dump(messages, f, indent=4, ensure_ascii=False)
+
+def save_image_message(sender, receiver, encrypted_for_receiver, encrypted_for_sender):
+    messages = load_messages()
+    
+    new_message = {
+        "type": "image",
+        "sender": sender,
+        "receiver": receiver,
+        "image_receiver": encrypted_for_receiver,
+        "image_sender": encrypted_for_sender,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    messages.append(new_message)
+    
+    with open(MESSAGES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(messages, f, indent=4, ensure_ascii=False)
+
 
 def get_conversation_history(user1, user2):
     messages = load_messages()
@@ -96,7 +116,15 @@ def register_user(username, password):
     if username in users:
         return False, "Username-ul există deja!"
     
+    existing_ids = {user_data["id"] for user_data in users.values() if "id" in user_data}
+    
+    while True:
+        user_id = str(uuid.uuid4())
+        if user_id not in existing_ids:
+            break
+    
     users[username] = {
+        "id": user_id,
         "password": password,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -168,48 +196,70 @@ def handle_client(conn, addr):
         users_list = get_all_users()
         conn.sendall(f"USERS_LIST:{json.dumps(users_list)}\n".encode())
         
+        buffer = ""
         while True:
-            data = conn.recv(1024)
+            data = conn.recv(8192) 
             if not data:
                 break
             
-            message = data.decode().strip()
+            buffer += data.decode()
             
-            if message.startswith("GET_HISTORY:"):
-                other_user = message.split(":", 1)[1]
-                history = get_conversation_history(username, other_user)
-                conn.sendall(f"HISTORY:{json.dumps(history)}\n".encode())
+            while '\n' in buffer:
+                message, buffer = buffer.split('\n', 1)
+                message = message.strip()
+                
+                if not message:
+                    continue
             
-            elif message.startswith("SEND_PUBLIC_KEY:"):
-                public_key_pem = message.split(":", 1)[1]
-                save_public_key(username, public_key_pem)
-                conn.sendall(b"PUBLIC_KEY_SAVED\n")
-            
-            elif message.startswith("GET_PUBLIC_KEY:"):
-                requested_user = message.split(":", 1)[1]
-                public_key = get_public_key(requested_user)
-                if public_key:
-                    conn.sendall(f"PUBLIC_KEY:{requested_user}:{public_key}\n".encode())
-                else:
-                    conn.sendall(f"PUBLIC_KEY_NOT_FOUND:{requested_user}\n".encode())
-            
-            elif message.startswith("MSG:"):
-                parts = message.split(":", 3)
-                if len(parts) == 4:
-                    _, recipient, encrypted_for_receiver, encrypted_for_sender = parts
-                    
-                    save_message(username, recipient, encrypted_for_receiver, encrypted_for_sender)
-                    
-                    with lock:
-                        if recipient in clients:
-                            forward_msg = f"NEW_MSG:{username}:{encrypted_for_receiver}:{datetime.now().strftime('%H:%M')}\n"
-                            clients[recipient].sendall(forward_msg.encode())
-                    
-                    conn.sendall(b"MSG_SENT:OK\n")
-            
-            elif message == "GET_USERS":
-                users_list = get_all_users()
-                conn.sendall(f"USERS_LIST:{json.dumps(users_list)}\n".encode())
+                if message.startswith("GET_HISTORY:"):
+                    other_user = message.split(":", 1)[1]
+                    history = get_conversation_history(username, other_user)
+                    conn.sendall(f"HISTORY:{json.dumps(history)}\n".encode())
+                
+                elif message.startswith("SEND_PUBLIC_KEY:"):
+                    public_key_pem = message.split(":", 1)[1]
+                    save_public_key(username, public_key_pem)
+                    conn.sendall(b"PUBLIC_KEY_SAVED\n")
+                
+                elif message.startswith("GET_PUBLIC_KEY:"):
+                    requested_user = message.split(":", 1)[1]
+                    public_key = get_public_key(requested_user)
+                    if public_key:
+                        conn.sendall(f"PUBLIC_KEY:{requested_user}:{public_key}\n".encode())
+                    else:
+                        conn.sendall(f"PUBLIC_KEY_NOT_FOUND:{requested_user}\n".encode())
+                
+                elif message.startswith("MSG:"):
+                    parts = message.split(":", 3)
+                    if len(parts) == 4:
+                        _, recipient, encrypted_for_receiver, encrypted_for_sender = parts
+                        
+                        save_message(username, recipient, encrypted_for_receiver, encrypted_for_sender)
+                        
+                        with lock:
+                            if recipient in clients:
+                                forward_msg = f"NEW_MSG:{username}:{encrypted_for_receiver}:{datetime.now().strftime('%H:%M')}\n"
+                                clients[recipient].sendall(forward_msg.encode())
+                        
+                        conn.sendall(b"MSG_SENT:OK\n")
+                
+                elif message.startswith("IMAGE:"):
+                    parts = message.split(":", 3)
+                    if len(parts) == 4:
+                        _, recipient, encrypted_for_receiver, encrypted_for_sender = parts
+                        
+                        save_image_message(username, recipient, encrypted_for_receiver, encrypted_for_sender)
+                        
+                        with lock:
+                            if recipient in clients:
+                                forward_msg = f"NEW_IMAGE:{username}:{encrypted_for_receiver}:{datetime.now().strftime('%H:%M')}\n"
+                                clients[recipient].sendall(forward_msg.encode())
+                        
+                        conn.sendall(b"IMAGE_SENT:OK\n")
+                
+                elif message == "GET_USERS":
+                    users_list = get_all_users()
+                    conn.sendall(f"USERS_LIST:{json.dumps(users_list)}\n".encode())
     
     except Exception as e:
         print(f"{username} s-a deconectat!")
