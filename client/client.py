@@ -1,12 +1,14 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, filedialog
 import json
 import base64
 import os
 import hashlib
 import emoji
+import io
+from PIL import Image, ImageTk
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
@@ -272,6 +274,81 @@ class MessengerClient:
         except Exception as e:
             return "Eroare decriptare"
     
+    def encrypt_image(self, image_data, recipient_username):
+        try:
+            if recipient_username == self.username:
+                recipient_public_key = self.public_key
+            else:
+                recipient_public_key = self.public_keys_cache.get(recipient_username)
+            
+            if not recipient_public_key:
+                return None
+            
+            aes_key = os.urandom(32) 
+            iv = os.urandom(16) 
+
+            cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+            encryptor = cipher.encryptor()
+            
+            padding_length = 16 - (len(image_data) % 16)
+            padded_data = image_data + bytes([padding_length]) * padding_length
+            
+            encrypted_image = encryptor.update(padded_data) + encryptor.finalize()
+            
+            encrypted_aes_key = recipient_public_key.encrypt(
+                aes_key + iv, 
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+            
+            encrypted_image_b64 = base64.b64encode(encrypted_image).decode()
+            encrypted_key_b64 = base64.b64encode(encrypted_aes_key).decode()
+            
+            combined = f"{encrypted_key_b64}|||{encrypted_image_b64}"
+            
+            return combined
+        except Exception as e:
+            print(f"Eroare criptare imagine: {e}")
+            return None
+    
+    def decrypt_image(self, encrypted_combined):
+        try:
+            parts = encrypted_combined.split('|||', 1)
+            if len(parts) != 2:
+                return None
+            
+            encrypted_key_b64, encrypted_image_b64 = parts
+            
+            encrypted_key = base64.b64decode(encrypted_key_b64)
+            aes_key_and_iv = self.private_key.decrypt(
+                encrypted_key,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+            
+            aes_key = aes_key_and_iv[:32]
+            iv = aes_key_and_iv[32:]
+            
+            encrypted_image = base64.b64decode(encrypted_image_b64)
+            cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+            decryptor = cipher.decryptor()
+            
+            padded_data = decryptor.update(encrypted_image) + decryptor.finalize()
+
+            padding_length = padded_data[-1]
+            image_data = padded_data[:-padding_length]
+            
+            return image_data
+        except Exception as e:
+            print(f"Eroare decriptare imagine: {e}")
+            return None
+    
     def register(self):
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
@@ -393,6 +470,19 @@ class MessengerClient:
         
         tk.Button(
             input_frame,
+            text="🖼️",
+            command=self.select_and_send_image,
+            bg="#ffffff",
+            fg="black",
+            font=("Segoe UI Emoji", 16),
+            cursor="hand2",
+            relief=tk.FLAT,
+            width=2,
+            height=1
+        ).pack(side=tk.RIGHT, padx=5)
+        
+        tk.Button(
+            input_frame,
             text="😊",
             command=self.show_emoji_picker,
             bg="#ffd700",
@@ -471,6 +561,16 @@ class MessengerClient:
                             
                             if self.current_conversation == sender:
                                 self.root.after(0, lambda m=decrypted_msg, t=time: self.add_message_to_chat(m, "received", t))
+                    
+                    elif message.startswith("NEW_IMAGE:"):
+                        parts = message.split(":", 3)
+                        if len(parts) == 4:
+                            _, sender, encrypted_combined, time = parts
+                            
+                            image_bytes = self.decrypt_image(encrypted_combined)
+                            
+                            if image_bytes and self.current_conversation == sender:
+                                self.root.after(0, lambda img=image_bytes, t=time: self.add_image_to_chat(img, "received", t))
             
             except Exception as e:
                 if self.running:
@@ -517,15 +617,28 @@ class MessengerClient:
         if history:
             for msg in history:
                 time = msg["timestamp"].split(" ")[1][:5] 
+                msg_type = msg.get("type", "text")
                 
-                if msg["sender"] == self.username:
-                    encrypted_msg = msg.get("message_sender", msg.get("message", ""))
-                    decrypted_msg = self.decrypt_message(encrypted_msg)
-                    self.add_message_to_chat(decrypted_msg, "sent", time)
+                if msg_type == "image":
+                    if msg["sender"] == self.username:
+                        encrypted_combined = msg.get("image_sender", "")
+                        image_bytes = self.decrypt_image(encrypted_combined)
+                        if image_bytes:
+                            self.add_image_to_chat(image_bytes, "sent", time)
+                    else:
+                        encrypted_combined = msg.get("image_receiver", "")
+                        image_bytes = self.decrypt_image(encrypted_combined)
+                        if image_bytes:
+                            self.add_image_to_chat(image_bytes, "received", time)
                 else:
-                    encrypted_msg = msg.get("message_receiver", msg.get("message", ""))
-                    decrypted_msg = self.decrypt_message(encrypted_msg)
-                    self.add_message_to_chat(decrypted_msg, "received", time)
+                    if msg["sender"] == self.username:
+                        encrypted_msg = msg.get("message_sender", msg.get("message", ""))
+                        decrypted_msg = self.decrypt_message(encrypted_msg)
+                        self.add_message_to_chat(decrypted_msg, "sent", time)
+                    else:
+                        encrypted_msg = msg.get("message_receiver", msg.get("message", ""))
+                        decrypted_msg = self.decrypt_message(encrypted_msg)
+                        self.add_message_to_chat(decrypted_msg, "received", time)
         
         self.messages_area.config(state='disabled')
         self.messages_area.see(tk.END)
@@ -581,6 +694,97 @@ class MessengerClient:
         
         except Exception as e:
             messagebox.showerror("Eroare", f"Nu s-a trimis mesajul")
+    
+    def select_and_send_image(self):
+        if not self.current_conversation:
+            messagebox.showwarning("Eroare", "Selectează un utilizator din lista!")
+            return
+        
+        if self.current_conversation not in self.public_keys_cache:
+            messagebox.showwarning("Eroare", "Asteapta incarcarea cheii de criptare")
+            self.get_public_key(self.current_conversation)
+            return
+        
+        file_path = filedialog.askopenfilename(
+            title="Selectează o imagine",
+            filetypes=[
+                ("Imagini", "*.png *.jpg *.jpeg *.gif *.bmp"),
+                ("Toate fișierele", "*.*")
+            ]
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            img = Image.open(file_path)
+            
+            max_size = (800, 800)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            
+            img_byte_arr = io.BytesIO()
+            img_format = img.format if img.format else 'PNG'
+            img.save(img_byte_arr, format=img_format)
+            image_bytes = img_byte_arr.getvalue()
+            
+            encrypted_for_receiver = self.encrypt_image(
+                image_bytes, self.current_conversation
+            )
+            
+            if not encrypted_for_receiver:
+                messagebox.showerror("Eroare", "Nu s-a putut cripta imaginea")
+                return
+            
+            encrypted_for_sender = self.encrypt_image(
+                image_bytes, self.username
+            )
+            
+            if not encrypted_for_sender:
+                messagebox.showerror("Eroare", "Nu s-a putut cripta imaginea")
+                return
+            
+            image_msg = f"IMAGE:{self.current_conversation}:{encrypted_for_receiver}:{encrypted_for_sender}\n"
+            self.socket.sendall(image_msg.encode())
+            
+            from datetime import datetime
+            current_time = datetime.now().strftime("%H:%M")
+            self.add_image_to_chat(image_bytes, "sent", current_time)
+            
+        except Exception as e:
+            messagebox.showerror("Eroare", f"Nu s-a putut trimite imaginea: {str(e)}")
+    
+    def add_image_to_chat(self, image_bytes, msg_type, time):
+        try:
+            self.messages_area.config(state='normal')
+            
+            img = Image.open(io.BytesIO(image_bytes))
+            
+            display_size = (300, 300)
+            img.thumbnail(display_size, Image.Resampling.LANCZOS)
+            
+            photo = ImageTk.PhotoImage(img)
+            
+
+            if not hasattr(self, 'image_references'):
+                self.image_references = []
+            self.image_references.append(photo)
+            
+            if msg_type == "sent":
+                self.messages_area.insert(tk.END, "\n")
+                self.messages_area.image_create(tk.END, image=photo)
+                self.messages_area.insert(tk.END, "\n")
+                self.messages_area.insert(tk.END, f"{time}\n", "time_sent")
+            else:
+                self.messages_area.insert(tk.END, "\n")
+                self.messages_area.image_create(tk.END, image=photo)
+                self.messages_area.insert(tk.END, "\n")
+                self.messages_area.insert(tk.END, f"{time}\n", "time_received")
+            
+            self.messages_area.see(tk.END)
+            self.messages_area.config(state='disabled')
+            
+        except Exception as e:
+            print(f"Eroare afișare imagine: {e}")
     
     def show_emoji_picker(self):
         emoji_window = tk.Toplevel(self.root)
